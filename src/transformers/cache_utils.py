@@ -578,6 +578,7 @@ class QuantizedCache(DynamicCache):
 
     def __init__(self, cache_config: QuantizedCacheConfig) -> None:
         super().__init__()
+        print(f"Initializing QuantizedCache with config: {cache_config}")
         self._quantized_key_cache: List[torch.Tensor] = []
         self._quantized_value_cache: List[torch.Tensor] = []
 
@@ -591,6 +592,21 @@ class QuantizedCache(DynamicCache):
 
         super().__init__()
 
+    def print_cache_status(self):
+        print("\n--- Cache Status ---")
+        print(f"Total layers cached: {len(self.key_cache)}")
+        print(f"Layers with quantized data: {len(self._quantized_key_cache)}")
+        print(f"Layers with unquantized data: {sum(1 for k in self.key_cache if k.numel() > 0)}")
+        print(f"Total tokens seen: {self._seen_tokens}")
+        for i, (k, v, qk, qv) in enumerate(zip(self.key_cache, self.value_cache, 
+                                               self._quantized_key_cache, self._quantized_value_cache)):
+            print(f"Layer {i}:")
+            print(f"  Unquantized - Key: {k.shape if k.numel() > 0 else 'Empty'}, "
+                  f"Value: {v.shape if v.numel() > 0 else 'Empty'}")
+            print(f"  Quantized   - Key: {qk[0].shape if isinstance(qk, tuple) else qk.shape}, "
+                  f"Value: {qv[0].shape if isinstance(qv, tuple) else qv.shape}")
+        print("--------------------\n")
+
     def update(
         self,
         key_states: torch.Tensor,
@@ -601,14 +617,17 @@ class QuantizedCache(DynamicCache):
         # Update the number of seen tokens
         if layer_idx == 0:
             self._seen_tokens += key_states.shape[-2]
+            print(f"\nUpdating cache for new token(s). Total tokens: {self._seen_tokens}")
 
         if len(self.key_cache) <= layer_idx:
+            print(f"Initializing cache for layer {layer_idx}")
             self._quantized_key_cache.append(self._quantize(key_states.contiguous(), axis=self.axis_key))
             self._quantized_value_cache.append(self._quantize(value_states.contiguous(), axis=self.axis_value))
             self.key_cache.append(torch.zeros(0, dtype=key_states.dtype, device=key_states.device))
             self.value_cache.append(torch.zeros(0, dtype=key_states.dtype, device=key_states.device))
             keys_to_return, values_to_return = key_states, value_states
         else:
+            print(f"Updating cache for layer {layer_idx}")
             dequant_key = self._dequantize(self._quantized_key_cache[layer_idx])
             dequant_value = self._dequantize(self._quantized_value_cache[layer_idx])
             keys_to_return = [dequant_key, self.key_cache[layer_idx], key_states]
@@ -629,6 +648,8 @@ class QuantizedCache(DynamicCache):
             else:
                 self.key_cache[layer_idx] = torch.cat([self.key_cache[layer_idx], key_states], dim=-2)
                 self.value_cache[layer_idx] = torch.cat([self.value_cache[layer_idx], value_states], dim=-2)
+        if layer_idx == len(self.key_cache) - 1:
+            self.print_cache_status()
 
         return keys_to_return, values_to_return
 
